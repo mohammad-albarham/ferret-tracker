@@ -1,5 +1,5 @@
 [package]
-name = "ferret"
+name = "ferret-tracker"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ferret Contributors"]
@@ -70,5 +70,5 @@ strip = true
 codegen-units = 1
 
 [[bin]]
-name = "ferret"
+name = "ferret-tracker"
 path = "src/main.rs"

@@ -15,11 +15,17 @@ Like its namesake, Ferret is small, fast, and excellent at finding things. It ma
 
 ## 📦 Installation
 
+### From crates.io
+
+```bash
+cargo install ferret-tracker
+```
+
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ferret.git
+git clone https://github.com/mohammad-albarham/ferret.git
 cd ferret
 
 # Build in release mode
@@ -39,19 +45,19 @@ cargo install --path .
 
 ```bash
 # Start watching with TUI (uses default config)
-ferret watch
+ferret-tracker watch
 
 # Watch specific directories
-ferret watch --watch ~/Downloads --watch ~/Desktop
+ferret-tracker watch --watch ~/Downloads --watch ~/Desktop
 
 # Run headless (no TUI, just logging)
-ferret watch --headless
+ferret-tracker watch --headless
 
 # List recent files
-ferret list --since 24h
+ferret-tracker list --since 24h
 
 # Show statistics
-ferret stats
+ferret-tracker stats
 ```
 
 ## ⌨️ TUI Keybindings
