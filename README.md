@@ -239,7 +239,7 @@ cargo clippy
 
 ## 📄 License
 
-This project is dedicated to the public domain under the [CC0 1.0 Universal](LICENSE) license.
+This project is licensed under the [MIT License](LICENSE).
 
 ## 🙏 Acknowledgments
 
