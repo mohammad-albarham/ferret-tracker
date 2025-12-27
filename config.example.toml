@@ -10,6 +10,8 @@
 watch_paths = [
     "~/Downloads",
     "~/Desktop",
+    "~/.cache",
+    "~/.local/lib/python*/site-packages"
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -30,8 +32,8 @@ ignore_patterns = [
     "**/build/**",
     "**/dist/**",
     "**/__pycache__/**",
-    "**/venv/**",
-    "**/.venv/**",
+    # "**/venv/**",
+    # "**/.venv/**",
 
     # Editor/IDE files
     "**/*.swp",
@@ -56,8 +58,8 @@ ignore_patterns = [
     "**/.Trashes/**",
 
     # Cache directories
-    "**/.cache/**",
-    "**/Cache/**",
+    # "**/.cache/**",
+    # "**/Cache/**",
 ]
 
 # ─────────────────────────────────────────────────────────────
