@@ -3,7 +3,7 @@
 //! This module contains the core application structure that manages
 //! the TUI state, handles input, and coordinates between views.
 
-use crate::models::{EventFilter, FileEvent};
+use crate::models::{EventFilter, FileEvent, FolderGroup, TreeNode, TreeViewState, ViewMode};
 use crate::store::Store;
 use crate::watcher::WatcherMessage;
 use anyhow::Result;
@@ -20,6 +20,7 @@ use super::filters::FilterOverlay;
 use super::help::HelpOverlay;
 use super::list_view::ListView;
 use super::input::InputOverlay;
+use super::tree_view::TreeView;
 
 /// Default page size for pagination
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -114,6 +115,20 @@ pub struct App {
     pub pending_new_files: usize,
     /// Last time we batched watcher events
     pub last_batch_time: Instant,
+    
+    // View mode and tree view state
+    /// Current view mode (Flat, GroupByFolder, TreeView)
+    pub view_mode: ViewMode,
+    /// Tree nodes for tree view
+    pub tree_nodes: Vec<TreeNode>,
+    /// Tree view state (expansion, selection)
+    pub tree_state: TreeViewState,
+    /// Folder groups for grouped view
+    pub folder_groups: Vec<FolderGroup>,
+    /// Selected index in grouped view (covers both headers and files)
+    pub grouped_selected_index: usize,
+    /// Scroll offset for grouped view
+    pub grouped_scroll_offset: usize,
 }
 
 /// Actions that require confirmation
@@ -131,6 +146,17 @@ impl App {
         let total_count = store.count_filtered_events(&filter)?;
         let events = store.query_events(&filter)?;
         let visible_count = events.len();
+        
+        // Build tree and grouped views
+        let tree_nodes = TreeNode::from_events(&events);
+        let mut tree_state = TreeViewState::new();
+        
+        // Expand ALL directories by default so files are visible
+        tree_state.expand_all(&tree_nodes);
+        
+        tree_state.rebuild_flattened(&tree_nodes);
+        // selected_index defaults to 0, which is correct
+        let folder_groups = FolderGroup::from_events(&events);
 
         Ok(Self {
             state: AppState::Running,
@@ -157,6 +183,13 @@ impl App {
             needs_refresh: false,
             pending_new_files: 0,
             last_batch_time: Instant::now(),
+            // View mode and tree view
+            view_mode: ViewMode::default(),
+            tree_nodes,
+            tree_state,
+            folder_groups,
+            grouped_selected_index: 0,
+            grouped_scroll_offset: 0,
         })
     }
 
@@ -181,11 +214,52 @@ impl App {
             self.selected_index = self.events.len() - 1;
         }
         
+        // Rebuild tree and grouped views
+        self.rebuild_tree_views();
+        
         // Clear refresh flag
         self.needs_refresh = false;
         self.pending_new_files = 0;
         
         Ok(())
+    }
+    
+    /// Rebuild tree and grouped views from current events
+    fn rebuild_tree_views(&mut self) {
+        // Rebuild tree nodes
+        self.tree_nodes = TreeNode::from_events(&self.events);
+        
+        // Auto-expand ALL directories (including nested ones) so files stay visible
+        self.tree_state.expand_all(&self.tree_nodes);
+        
+        // Preserve expansion state, rebuild flattened
+        self.tree_state.rebuild_flattened(&self.tree_nodes);
+        
+        // Ensure tree selection index is valid
+        if self.tree_state.selected_index >= self.tree_state.flattened.len() {
+            self.tree_state.selected_index = 0;
+        }
+        
+        // Rebuild folder groups
+        self.folder_groups = FolderGroup::from_events(&self.events);
+        
+        // Adjust grouped selection if needed
+        let total_grouped_rows = self.count_grouped_rows();
+        if self.grouped_selected_index >= total_grouped_rows && total_grouped_rows > 0 {
+            self.grouped_selected_index = total_grouped_rows - 1;
+        }
+    }
+    
+    /// Count total rows in grouped view
+    fn count_grouped_rows(&self) -> usize {
+        let mut count = 0;
+        for group in &self.folder_groups {
+            count += 1; // Folder header
+            if group.expanded {
+                count += group.files.len();
+            }
+        }
+        count
     }
     
     /// Schedule a refresh (for batched updates)
@@ -335,9 +409,79 @@ impl App {
                 }
             }
 
-            // Navigation within current page
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+            // Toggle view mode with Tab
+            KeyCode::Tab => {
+                self.view_mode = self.view_mode.next();
+                self.set_status(format!("View: {}", self.view_mode.label()));
+            }
+            
+            // Expand all (tree view)
+            KeyCode::Char('e') if self.view_mode == ViewMode::TreeView => {
+                self.tree_state.expand_all(&self.tree_nodes);
+                self.tree_state.rebuild_flattened(&self.tree_nodes);
+                self.set_status("Expanded all".to_string());
+            }
+            
+            // Collapse all (tree view)  
+            KeyCode::Char('E') if self.view_mode == ViewMode::TreeView => {
+                self.tree_state.collapse_all();
+                self.tree_state.rebuild_flattened(&self.tree_nodes);
+                self.set_status("Collapsed all".to_string());
+            }
+
+            // Navigation - depends on view mode
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection_down(),
+            
+            // Left arrow - collapse in tree view, or go back
+            KeyCode::Left | KeyCode::Char('h') => {
+                match self.view_mode {
+                    ViewMode::TreeView => {
+                        let nodes = self.tree_nodes.clone();
+                        self.tree_state.collapse_or_parent(&nodes);
+                    }
+                    ViewMode::GroupByFolder => {
+                        self.toggle_grouped_folder();
+                    }
+                    ViewMode::Flat => {
+                        if self.view == View::Detail {
+                            self.view = View::List;
+                        }
+                    }
+                }
+            }
+            
+            // Right arrow - expand in tree view
+            KeyCode::Right | KeyCode::Char('l') => {
+                match self.view_mode {
+                    ViewMode::TreeView => {
+                        let nodes = self.tree_nodes.clone();
+                        self.tree_state.expand_selected(&nodes);
+                    }
+                    ViewMode::GroupByFolder => {
+                        self.toggle_grouped_folder();
+                    }
+                    ViewMode::Flat => {
+                        if self.selected_event().is_some() {
+                            self.view = View::Detail;
+                        }
+                    }
+                }
+            }
+            
+            // Space - toggle expand in tree/grouped view
+            KeyCode::Char(' ') => {
+                match self.view_mode {
+                    ViewMode::TreeView => {
+                        let nodes = self.tree_nodes.clone();
+                        self.tree_state.toggle_selected(&nodes);
+                    }
+                    ViewMode::GroupByFolder => {
+                        self.toggle_grouped_folder();
+                    }
+                    ViewMode::Flat => {}
+                }
+            }
             
             // Pagination with Ctrl modifier
             KeyCode::PageUp if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -358,25 +502,14 @@ impl App {
             }
             
             // Regular page navigation (within page)
-            KeyCode::PageUp => self.move_selection(-10),
-            KeyCode::PageDown => self.move_selection(10),
-            KeyCode::Home | KeyCode::Char('g') => self.selected_index = 0,
-            KeyCode::End | KeyCode::Char('G') => {
-                if !self.events.is_empty() {
-                    self.selected_index = self.events.len() - 1;
-                }
-            }
+            KeyCode::PageUp => self.move_selection_by(-10),
+            KeyCode::PageDown => self.move_selection_by(10),
+            KeyCode::Home | KeyCode::Char('g') => self.move_to_start(),
+            KeyCode::End | KeyCode::Char('G') => self.move_to_end(),
 
             // View details
-            KeyCode::Enter | KeyCode::Char('l') => {
-                if self.selected_event().is_some() {
-                    self.view = View::Detail;
-                }
-            }
-
-            // Back from detail view
-            KeyCode::Char('h') if self.view == View::Detail => {
-                self.view = View::List;
+            KeyCode::Enter => {
+                self.handle_enter_key();
             }
 
             // Search
@@ -413,7 +546,7 @@ impl App {
 
             // Open file/folder
             KeyCode::Char('o') => {
-                if let Some(event) = self.selected_event() {
+                if let Some(event) = self.get_selected_file_event() {
                     let path = event.path.clone();
                     if path.exists() {
                         if let Err(e) = open::that(&path) {
@@ -429,7 +562,7 @@ impl App {
 
             // Open containing folder
             KeyCode::Char('O') => {
-                if let Some(event) = self.selected_event() {
+                if let Some(event) = self.get_selected_file_event() {
                     let dir = event.dir.clone();
                     if dir.exists() {
                         if let Err(e) = open::that(&dir) {
@@ -445,7 +578,7 @@ impl App {
 
             // Edit tags
             KeyCode::Char('t') => {
-                if let Some(event) = self.selected_event() {
+                if let Some(event) = self.get_selected_file_event() {
                     self.input_buffer = event.tags.clone();
                     self.input_mode = InputMode::EditTags;
                 }
@@ -453,7 +586,7 @@ impl App {
 
             // Edit notes
             KeyCode::Char('n') => {
-                if let Some(event) = self.selected_event() {
+                if let Some(event) = self.get_selected_file_event() {
                     self.input_buffer = event.notes.clone();
                     self.input_mode = InputMode::EditNotes;
                 }
@@ -461,7 +594,7 @@ impl App {
 
             // Delete file
             KeyCode::Char('d') => {
-                if let Some(event) = self.selected_event() {
+                if let Some(event) = self.get_selected_file_event() {
                     if let Some(id) = event.id {
                         self.pending_action = Some(PendingAction::DeleteFile(
                             id,
@@ -657,7 +790,7 @@ impl App {
         Ok(())
     }
 
-    /// Move selection by delta
+    /// Move selection by delta (for flat view)
     fn move_selection(&mut self, delta: i32) {
         if self.events.is_empty() {
             return;
@@ -670,6 +803,181 @@ impl App {
         };
 
         self.selected_index = new_index;
+    }
+    
+    /// Move selection up (view-mode aware)
+    fn move_selection_up(&mut self) {
+        match self.view_mode {
+            ViewMode::Flat => self.move_selection(-1),
+            ViewMode::GroupByFolder => {
+                if self.grouped_selected_index > 0 {
+                    self.grouped_selected_index -= 1;
+                }
+            }
+            ViewMode::TreeView => {
+                self.tree_state.move_up();
+            }
+        }
+    }
+    
+    /// Move selection down (view-mode aware)
+    fn move_selection_down(&mut self) {
+        match self.view_mode {
+            ViewMode::Flat => self.move_selection(1),
+            ViewMode::GroupByFolder => {
+                let max = self.count_grouped_rows().saturating_sub(1);
+                if self.grouped_selected_index < max {
+                    self.grouped_selected_index += 1;
+                }
+            }
+            ViewMode::TreeView => {
+                self.tree_state.move_down();
+            }
+        }
+    }
+    
+    /// Move selection by delta (view-mode aware)
+    fn move_selection_by(&mut self, delta: i32) {
+        match self.view_mode {
+            ViewMode::Flat => self.move_selection(delta),
+            ViewMode::GroupByFolder => {
+                let max = self.count_grouped_rows().saturating_sub(1);
+                if delta < 0 {
+                    self.grouped_selected_index = self.grouped_selected_index.saturating_sub((-delta) as usize);
+                } else {
+                    self.grouped_selected_index = (self.grouped_selected_index + delta as usize).min(max);
+                }
+            }
+            ViewMode::TreeView => {
+                for _ in 0..delta.abs() {
+                    if delta < 0 {
+                        self.tree_state.move_up();
+                    } else {
+                        self.tree_state.move_down();
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Move to start (view-mode aware)
+    fn move_to_start(&mut self) {
+        match self.view_mode {
+            ViewMode::Flat => self.selected_index = 0,
+            ViewMode::GroupByFolder => self.grouped_selected_index = 0,
+            ViewMode::TreeView => {
+                self.tree_state.selected_index = 0;
+                self.tree_state.scroll_offset = 0;
+            }
+        }
+    }
+    
+    /// Move to end (view-mode aware)
+    fn move_to_end(&mut self) {
+        match self.view_mode {
+            ViewMode::Flat => {
+                if !self.events.is_empty() {
+                    self.selected_index = self.events.len() - 1;
+                }
+            }
+            ViewMode::GroupByFolder => {
+                self.grouped_selected_index = self.count_grouped_rows().saturating_sub(1);
+            }
+            ViewMode::TreeView => {
+                self.tree_state.selected_index = self.tree_state.flattened.len().saturating_sub(1);
+            }
+        }
+    }
+    
+    /// Handle enter key (view-mode aware)
+    fn handle_enter_key(&mut self) {
+        match self.view_mode {
+            ViewMode::Flat => {
+                if self.selected_event().is_some() {
+                    self.view = View::Detail;
+                }
+            }
+            ViewMode::GroupByFolder => {
+                // Toggle folder or view file details
+                if self.is_grouped_selection_on_folder() {
+                    self.toggle_grouped_folder();
+                } else if self.get_selected_file_event().is_some() {
+                    self.view = View::Detail;
+                }
+            }
+            ViewMode::TreeView => {
+                // Toggle directory or view file details
+                let idx = self.tree_state.get_selected_index();
+                if idx < self.tree_state.flattened.len() {
+                    let node = &self.tree_state.flattened[idx];
+                    if node.is_dir {
+                        let nodes = self.tree_nodes.clone();
+                        self.tree_state.toggle_selected(&nodes);
+                    } else {
+                        self.view = View::Detail;
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Toggle expand/collapse for currently selected folder in grouped view
+    fn toggle_grouped_folder(&mut self) {
+        let mut row_idx = 0;
+        for group in &mut self.folder_groups {
+            if row_idx == self.grouped_selected_index {
+                group.expanded = !group.expanded;
+                return;
+            }
+            row_idx += 1;
+            if group.expanded {
+                row_idx += group.files.len();
+            }
+        }
+    }
+    
+    /// Check if current selection in grouped view is on a folder header
+    fn is_grouped_selection_on_folder(&self) -> bool {
+        let mut row_idx = 0;
+        for group in &self.folder_groups {
+            if row_idx == self.grouped_selected_index {
+                return true;
+            }
+            row_idx += 1;
+            if group.expanded {
+                row_idx += group.files.len();
+            }
+        }
+        false
+    }
+    
+    /// Get currently selected file event (view-mode aware)
+    fn get_selected_file_event(&self) -> Option<&FileEvent> {
+        match self.view_mode {
+            ViewMode::Flat => self.selected_event(),
+            ViewMode::GroupByFolder => {
+                let mut row_idx = 0;
+                for group in &self.folder_groups {
+                    if row_idx == self.grouped_selected_index {
+                        return None; // It's a folder header
+                    }
+                    row_idx += 1;
+                    if group.expanded {
+                        for file in &group.files {
+                            if row_idx == self.grouped_selected_index {
+                                // Find the matching event in self.events
+                                return self.events.iter().find(|e| e.path == file.path);
+                            }
+                            row_idx += 1;
+                        }
+                    }
+                }
+                None
+            }
+            ViewMode::TreeView => {
+                self.tree_state.selected_file_event(&self.tree_nodes)
+            }
+        }
     }
 
     /// Draw the application
@@ -691,7 +999,10 @@ impl App {
 
         // Draw main content based on current view
         match self.view {
-            View::List => ListView::draw(self, frame, chunks[1]),
+            View::List => {
+                // Use TreeView for all view modes - it dispatches internally
+                TreeView::draw(self, frame, chunks[1]);
+            }
             View::Detail => DetailView::draw(self, frame, chunks[1]),
         }
 
@@ -731,7 +1042,8 @@ impl App {
         };
         
         let header_text = format!(
-            " 🦡 Ferret │ {}/{} files{} │ Watching {} dirs │ {}",
+            " 🦡 Ferret │ View: {} │ {}/{} files{} │ Watching {} dirs │ {}",
+            self.view_mode.label(),
             self.events.len(),
             self.total_count,
             page_info,
@@ -762,7 +1074,7 @@ impl App {
                     } else {
                         ""
                     };
-                    format!(" j/k:nav │ Enter:detail │ f:filter │ /:search │ o:open │ ?:help{} │ q:quit ", page_hint)
+                    format!(" Tab:view │ j/k:nav │ Enter:detail │ f:filter │ /:search │ ?:help{} │ q:quit ", page_hint)
                 }
                 InputMode::Search => " Type to search │ Enter:apply │ Esc:cancel ".to_string(),
                 InputMode::Filter => " ↑↓:select │ ←→:adjust │ Space:toggle │ Enter:apply │ Esc:cancel ".to_string(),

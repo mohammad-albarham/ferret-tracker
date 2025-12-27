@@ -48,6 +48,17 @@ impl HelpOverlay {
             )),
             Line::from(""),
             Line::from(Span::styled(
+                "View Modes",
+                Style::default().fg(Color::Yellow).bold(),
+            )),
+            Line::from("  Tab        Switch view (Flat → Grouped → Tree)"),
+            Line::from("  ←/h        Collapse dir / Back (Tree/Grouped)"),
+            Line::from("  →/l        Expand dir / Enter (Tree/Grouped)"),
+            Line::from("  Space      Toggle expand/collapse"),
+            Line::from("  e          Expand all (Tree view)"),
+            Line::from("  E          Collapse all (Tree view)"),
+            Line::from(""),
+            Line::from(Span::styled(
                 "Navigation",
                 Style::default().fg(Color::Yellow).bold(),
             )),
@@ -56,8 +67,7 @@ impl HelpOverlay {
             Line::from("  PgUp/PgDn  Scroll by page"),
             Line::from("  Home/g     Jump to start"),
             Line::from("  End/G      Jump to end"),
-            Line::from("  Enter/l    View details"),
-            Line::from("  h/Esc      Back to list"),
+            Line::from("  Enter      View details / Toggle folder"),
             Line::from(""),
             Line::from(Span::styled(
                 "Filtering & Search",

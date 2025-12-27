@@ -194,6 +194,525 @@ impl std::str::FromStr for FileType {
     }
 }
 
+// ============================================================================
+// View Mode and Tree View Types
+// ============================================================================
+
+/// View mode for the file list
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// Flat chronological list (default)
+    #[default]
+    Flat,
+    /// Group files by folder (single level)
+    GroupByFolder,
+    /// Full nested tree hierarchy
+    TreeView,
+}
+
+impl ViewMode {
+    /// Cycle to next view mode
+    pub fn next(&self) -> Self {
+        match self {
+            ViewMode::Flat => ViewMode::GroupByFolder,
+            ViewMode::GroupByFolder => ViewMode::TreeView,
+            ViewMode::TreeView => ViewMode::Flat,
+        }
+    }
+    
+    /// Get display name for the view mode
+    pub fn label(&self) -> &'static str {
+        match self {
+            ViewMode::Flat => "Flat",
+            ViewMode::GroupByFolder => "Grouped",
+            ViewMode::TreeView => "Tree",
+        }
+    }
+}
+
+/// Type of node in the tree view
+#[derive(Debug, Clone)]
+pub enum TreeNodeType {
+    /// A directory that may contain children
+    Directory,
+    /// A file with associated FileEvent data
+    File(Box<FileEvent>),
+}
+
+/// A node in the file tree
+#[derive(Debug, Clone)]
+pub struct TreeNode {
+    /// Display name (directory name or filename)
+    pub name: String,
+    /// Full path identifier
+    pub path: PathBuf,
+    /// Node type (directory or file)
+    pub node_type: TreeNodeType,
+    /// Children nodes (directories first, then files)
+    pub children: Vec<TreeNode>,
+    /// Total file count in this subtree
+    pub file_count: usize,
+    /// Total size of files in this subtree
+    pub total_size: u64,
+}
+
+impl TreeNode {
+    /// Build tree from flat list of FileEvents
+    pub fn from_events(events: &[FileEvent]) -> Vec<TreeNode> {
+        use std::collections::BTreeMap;
+        
+        if events.is_empty() {
+            return Vec::new();
+        }
+        
+        // Find the common root path prefix
+        let common_root = Self::find_common_root(events);
+        
+        // Group events by their directory paths
+        let mut dir_files: BTreeMap<PathBuf, Vec<&FileEvent>> = BTreeMap::new();
+        for event in events {
+            dir_files.entry(event.dir.clone())
+                .or_default()
+                .push(event);
+        }
+        
+        // Build hierarchical structure starting from common root
+        Self::build_subtree(&dir_files, &common_root)
+    }
+    
+    /// Find the common root path for all events
+    fn find_common_root(events: &[FileEvent]) -> PathBuf {
+        if events.is_empty() {
+            return PathBuf::new();
+        }
+        
+        let first_dir = &events[0].dir;
+        let mut common: Vec<_> = first_dir.components().collect();
+        
+        for event in events.iter().skip(1) {
+            let components: Vec<_> = event.dir.components().collect();
+            let mut new_common = Vec::new();
+            
+            for (a, b) in common.iter().zip(components.iter()) {
+                if a == b {
+                    new_common.push(*a);
+                } else {
+                    break;
+                }
+            }
+            common = new_common;
+        }
+        
+        common.iter().collect()
+    }
+    
+    /// Recursively build subtree from grouped files
+    fn build_subtree(
+        dir_files: &std::collections::BTreeMap<PathBuf, Vec<&FileEvent>>,
+        current_path: &PathBuf,
+    ) -> Vec<TreeNode> {
+        let mut nodes = Vec::new();
+        let mut seen_dirs = std::collections::HashSet::new();
+        
+        // Find all directories that are immediate children of current_path
+        for dir_path in dir_files.keys() {
+            if dir_path == current_path {
+                continue;
+            }
+            
+            // Check if this directory is under current_path
+            if let Ok(rel) = dir_path.strip_prefix(current_path) {
+                // Get first component (immediate child dir)
+                if let Some(first_component) = rel.components().next() {
+                    let child_path = current_path.join(first_component);
+                    
+                    if seen_dirs.insert(child_path.clone()) {
+                        // Recursively build children
+                        let children = Self::build_subtree(dir_files, &child_path);
+                        
+                        // Get files directly in this directory
+                        let mut file_nodes: Vec<TreeNode> = dir_files
+                            .get(&child_path)
+                            .map(|files| {
+                                files.iter().map(|e| TreeNode {
+                                    name: e.filename.clone(),
+                                    path: e.path.clone(),
+                                    node_type: TreeNodeType::File(Box::new((*e).clone())),
+                                    children: vec![],
+                                    file_count: 1,
+                                    total_size: e.size_bytes.unwrap_or(0),
+                                }).collect()
+                            })
+                            .unwrap_or_default();
+                        
+                        // Calculate totals
+                        let child_file_count: usize = children.iter().map(|c| c.file_count).sum();
+                        let child_total_size: u64 = children.iter().map(|c| c.total_size).sum();
+                        let direct_file_count = file_nodes.len();
+                        let direct_total_size: u64 = file_nodes.iter().map(|f| f.total_size).sum();
+                        
+                        // Combine children: directories first, then files
+                        let mut all_children = children;
+                        all_children.append(&mut file_nodes);
+                        
+                        // Sort: directories first, then alphabetically
+                        all_children.sort_by(|a, b| {
+                            match (&a.node_type, &b.node_type) {
+                                (TreeNodeType::Directory, TreeNodeType::File(_)) => std::cmp::Ordering::Less,
+                                (TreeNodeType::File(_), TreeNodeType::Directory) => std::cmp::Ordering::Greater,
+                                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                            }
+                        });
+                        
+                        let dir_name = first_component.as_os_str()
+                            .to_string_lossy()
+                            .to_string();
+                        
+                        nodes.push(TreeNode {
+                            name: dir_name,
+                            path: child_path,
+                            node_type: TreeNodeType::Directory,
+                            children: all_children,
+                            file_count: child_file_count + direct_file_count,
+                            total_size: child_total_size + direct_total_size,
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Also add files directly in current_path
+        if let Some(files) = dir_files.get(current_path) {
+            for event in files {
+                nodes.push(TreeNode {
+                    name: event.filename.clone(),
+                    path: event.path.clone(),
+                    node_type: TreeNodeType::File(Box::new((*event).clone())),
+                    children: vec![],
+                    file_count: 1,
+                    total_size: event.size_bytes.unwrap_or(0),
+                });
+            }
+        }
+        
+        // Sort: directories first, then alphabetically
+        nodes.sort_by(|a, b| {
+            match (&a.node_type, &b.node_type) {
+                (TreeNodeType::Directory, TreeNodeType::File(_)) => std::cmp::Ordering::Less,
+                (TreeNodeType::File(_), TreeNodeType::Directory) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+        
+        nodes
+    }
+    
+    /// Check if this node is a directory
+    pub fn is_dir(&self) -> bool {
+        matches!(self.node_type, TreeNodeType::Directory)
+    }
+    
+    /// Get the file event if this is a file node
+    pub fn file_event(&self) -> Option<&FileEvent> {
+        match &self.node_type {
+            TreeNodeType::File(e) => Some(e),
+            TreeNodeType::Directory => None,
+        }
+    }
+}
+
+/// A flattened node for rendering (includes depth and tree drawing info)
+#[derive(Debug, Clone)]
+pub struct FlattenedNode {
+    /// Reference path to the node
+    pub path: PathBuf,
+    /// Display name
+    pub name: String,
+    /// Depth in the tree (0 = root level)
+    pub depth: usize,
+    /// Whether this is the last sibling at its level
+    pub is_last_sibling: bool,
+    /// Whether this directory is expanded (only relevant for directories)
+    pub is_expanded: bool,
+    /// Whether this is a directory
+    pub is_dir: bool,
+    /// File type (if file)
+    pub file_type: Option<FileType>,
+    /// File size (if file)
+    pub size_bytes: Option<u64>,
+    /// File count (for directories)
+    pub file_count: usize,
+    /// Ancestors' "is_last" status for drawing vertical lines
+    pub ancestor_is_last: Vec<bool>,
+}
+
+/// State for tree view navigation and expansion
+#[derive(Debug, Clone, Default)]
+pub struct TreeViewState {
+    /// Set of expanded directory paths
+    pub expanded: std::collections::HashSet<PathBuf>,
+    /// Currently selected index in flattened list
+    pub selected_index: usize,
+    /// Scroll offset for visible area
+    pub scroll_offset: usize,
+    /// Cached flattened nodes for current expansion state
+    pub flattened: Vec<FlattenedNode>,
+}
+
+impl TreeViewState {
+    /// Create new tree view state
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Toggle expand/collapse for a directory
+    pub fn toggle_expanded(&mut self, path: &PathBuf) {
+        if self.expanded.contains(path) {
+            self.expanded.remove(path);
+        } else {
+            self.expanded.insert(path.clone());
+        }
+    }
+    
+    /// Expand a directory
+    pub fn expand(&mut self, path: &PathBuf) {
+        self.expanded.insert(path.clone());
+    }
+    
+    /// Collapse a directory
+    pub fn collapse(&mut self, path: &PathBuf) {
+        self.expanded.remove(path);
+    }
+    
+    /// Expand all directories
+    pub fn expand_all(&mut self, nodes: &[TreeNode]) {
+        self.expand_recursive(nodes);
+    }
+    
+    fn expand_recursive(&mut self, nodes: &[TreeNode]) {
+        for node in nodes {
+            if node.is_dir() {
+                self.expanded.insert(node.path.clone());
+                self.expand_recursive(&node.children);
+            }
+        }
+    }
+    
+    /// Collapse all directories
+    pub fn collapse_all(&mut self) {
+        self.expanded.clear();
+    }
+    
+    /// Rebuild flattened list from tree nodes
+    pub fn rebuild_flattened(&mut self, nodes: &[TreeNode]) {
+        self.flattened.clear();
+        self.flatten_recursive(nodes, 0, &mut vec![]);
+    }
+    
+    fn flatten_recursive(
+        &mut self,
+        nodes: &[TreeNode],
+        depth: usize,
+        ancestor_is_last: &mut Vec<bool>,
+    ) {
+        let count = nodes.len();
+        for (idx, node) in nodes.iter().enumerate() {
+            let is_last = idx == count - 1;
+            let is_expanded = self.expanded.contains(&node.path);
+            
+            self.flattened.push(FlattenedNode {
+                path: node.path.clone(),
+                name: node.name.clone(),
+                depth,
+                is_last_sibling: is_last,
+                is_expanded,
+                is_dir: node.is_dir(),
+                file_type: node.file_event().map(|e| e.file_type),
+                size_bytes: node.file_event().and_then(|e| e.size_bytes),
+                file_count: node.file_count,
+                ancestor_is_last: ancestor_is_last.clone(),
+            });
+            
+            // Recurse into expanded directories
+            if node.is_dir() && is_expanded {
+                ancestor_is_last.push(is_last);
+                self.flatten_recursive(&node.children, depth + 1, ancestor_is_last);
+                ancestor_is_last.pop();
+            }
+        }
+    }
+    
+    /// Get index of selected item in flattened list
+    pub fn get_selected_index(&self) -> usize {
+        self.selected_index.min(self.flattened.len().saturating_sub(1))
+    }
+    
+    /// Get the selected node
+    pub fn selected_node(&self) -> Option<&FlattenedNode> {
+        self.flattened.get(self.selected_index)
+    }
+    
+    /// Get the selected path
+    pub fn selected_path(&self) -> Option<&PathBuf> {
+        self.selected_node().map(|n| &n.path)
+    }
+    
+    /// Move selection up
+    pub fn move_up(&mut self) {
+        if self.flattened.is_empty() {
+            return;
+        }
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+        }
+    }
+    
+    /// Move selection down
+    pub fn move_down(&mut self) {
+        if self.flattened.is_empty() {
+            return;
+        }
+        if self.selected_index + 1 < self.flattened.len() {
+            self.selected_index += 1;
+        }
+    }
+    
+    /// Collapse current directory or move to parent
+    pub fn collapse_or_parent(&mut self, nodes: &[TreeNode]) {
+        if self.flattened.is_empty() {
+            return;
+        }
+        
+        let idx = self.get_selected_index();
+        let node = &self.flattened[idx];
+        let node_path = node.path.clone();
+        
+        // If it's an expanded directory, collapse it
+        if node.is_dir && self.expanded.contains(&node_path) {
+            self.collapse(&node_path);
+            self.rebuild_flattened(nodes);
+            // Selection index stays the same (now on collapsed folder)
+            return;
+        }
+        
+        // Otherwise, go to parent directory
+        if let Some(parent) = node_path.parent() {
+            let parent_path = parent.to_path_buf();
+            if let Some(parent_idx) = self.flattened.iter().position(|n| n.path == parent_path) {
+                self.selected_index = parent_idx;
+            }
+        }
+    }
+    
+    /// Expand current directory
+    pub fn expand_selected(&mut self, nodes: &[TreeNode]) {
+        if self.flattened.is_empty() {
+            return;
+        }
+        
+        let idx = self.get_selected_index();
+        let node = &self.flattened[idx];
+        let node_path = node.path.clone();
+        
+        if node.is_dir && !self.expanded.contains(&node_path) {
+            self.expand(&node_path);
+            self.rebuild_flattened(nodes);
+            // Selection index stays the same (now on expanded folder)
+        }
+    }
+    
+    /// Toggle expand/collapse of selected directory
+    pub fn toggle_selected(&mut self, nodes: &[TreeNode]) {
+        if self.flattened.is_empty() {
+            return;
+        }
+        
+        let idx = self.get_selected_index();
+        let node = &self.flattened[idx];
+        let node_path = node.path.clone();
+        
+        if node.is_dir {
+            self.toggle_expanded(&node_path);
+            self.rebuild_flattened(nodes);
+        }
+    }
+    
+    /// Get the selected node's FileEvent (if it's a file)
+    pub fn selected_file_event<'a>(&self, nodes: &'a [TreeNode]) -> Option<&'a FileEvent> {
+        let selected = self.selected_path()?;
+        Self::find_file_event(nodes, selected)
+    }
+    
+    fn find_file_event<'a>(nodes: &'a [TreeNode], path: &PathBuf) -> Option<&'a FileEvent> {
+        for node in nodes {
+            if &node.path == path {
+                return node.file_event();
+            }
+            if let Some(event) = Self::find_file_event(&node.children, path) {
+                return Some(event);
+            }
+        }
+        None
+    }
+    
+    /// Ensure selected index is visible given scroll offset and visible rows
+    pub fn ensure_visible(&mut self, visible_rows: usize) {
+        let idx = self.get_selected_index();
+        if idx < self.scroll_offset {
+            self.scroll_offset = idx;
+        } else if idx >= self.scroll_offset + visible_rows {
+            self.scroll_offset = idx - visible_rows + 1;
+        }
+    }
+}
+
+/// A group of files in a folder (for GroupByFolder view mode)
+#[derive(Debug, Clone)]
+pub struct FolderGroup {
+    /// The folder path
+    pub path: PathBuf,
+    /// Display name for the folder
+    pub name: String,
+    /// Files in this folder
+    pub files: Vec<FileEvent>,
+    /// Whether the folder is expanded in the UI
+    pub expanded: bool,
+    /// Total size of all files in this folder
+    pub total_size: u64,
+}
+
+impl FolderGroup {
+    /// Build folder groups from flat list of events
+    pub fn from_events(events: &[FileEvent]) -> Vec<FolderGroup> {
+        use std::collections::BTreeMap;
+        
+        let mut groups: BTreeMap<PathBuf, Vec<FileEvent>> = BTreeMap::new();
+        
+        for event in events {
+            groups.entry(event.dir.clone())
+                .or_default()
+                .push(event.clone());
+        }
+        
+        groups.into_iter()
+            .map(|(path, files)| {
+                let total_size = files.iter().filter_map(|f| f.size_bytes).sum();
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                
+                FolderGroup {
+                    path,
+                    name,
+                    files,
+                    expanded: true,
+                    total_size,
+                }
+            })
+            .collect()
+    }
+}
+
 /// Represents a file event recorded in the ledger
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEvent {

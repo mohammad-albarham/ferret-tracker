@@ -409,11 +409,6 @@ impl FileWatcher {
             if matcher.is_match(filename) {
                 return true;
             }
-            
-            // Skip hidden files (starting with .)
-            if filename.starts_with('.') {
-                return true;
-            }
         }
 
         false

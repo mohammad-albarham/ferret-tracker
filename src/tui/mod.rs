@@ -9,5 +9,6 @@ pub mod filters;
 pub mod help;
 pub mod list_view;
 pub mod input;
+pub mod tree_view;
 
 pub use app::App;
