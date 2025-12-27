@@ -1,0 +1,111 @@
+# Ferret Configuration Example
+# Copy this file to ~/.config/ferret/config.toml
+
+# ─────────────────────────────────────────────────────────────
+# Directories to Watch
+# ─────────────────────────────────────────────────────────────
+# List of directories to monitor for new files (recursive)
+# Use ~ for home directory
+
+watch_paths = [
+    "~/Downloads",
+    "~/Desktop",
+]
+
+# ─────────────────────────────────────────────────────────────
+# Ignore Patterns
+# ─────────────────────────────────────────────────────────────
+# Glob patterns for files/directories to ignore
+# These are matched against the full path
+
+ignore_patterns = [
+    # Version control
+    "**/.git/**",
+    "**/.svn/**",
+    "**/.hg/**",
+
+    # Build artifacts
+    "**/node_modules/**",
+    "**/target/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/__pycache__/**",
+    "**/venv/**",
+    "**/.venv/**",
+
+    # Editor/IDE files
+    "**/*.swp",
+    "**/*.swo",
+    "**/*~",
+    "**/.idea/**",
+    "**/.vscode/**",
+
+    # Temporary/partial files
+    "**/*.tmp",
+    "**/*.temp",
+    "**/*.part",
+    "**/*.crdownload",    # Chrome partial downloads
+    "**/*.download",
+
+    # Hidden files (optional - uncomment to ignore all hidden files)
+    # "**/.*",
+
+    # macOS specific
+    "**/.DS_Store",
+    "**/.Spotlight-V100/**",
+    "**/.Trashes/**",
+
+    # Cache directories
+    "**/.cache/**",
+    "**/Cache/**",
+]
+
+# ─────────────────────────────────────────────────────────────
+# File Size Filter
+# ─────────────────────────────────────────────────────────────
+# Minimum file size in bytes to log (0 = log all files)
+# Useful for ignoring very small files like temp files
+# Examples:
+#   0       - Log all files
+#   1024    - Skip files smaller than 1 KB
+#   1048576 - Skip files smaller than 1 MB
+
+min_size_bytes = 0
+
+# ─────────────────────────────────────────────────────────────
+# Data Retention
+# ─────────────────────────────────────────────────────────────
+# Number of days to keep events before automatic cleanup
+# Set to 0 to keep events forever
+# Cleanup runs at startup
+
+retention_days = 90
+
+# ─────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────
+# Log level: "error", "warn", "info", "debug", "trace"
+
+log_level = "info"
+
+# ─────────────────────────────────────────────────────────────
+# Advanced Options
+# ─────────────────────────────────────────────────────────────
+
+# Whether to follow symlinks when watching directories
+follow_symlinks = false
+
+# Debounce delay in milliseconds for file events
+# Lower values = more responsive, higher values = less CPU usage
+debounce_ms = 500
+
+# ─────────────────────────────────────────────────────────────
+# Custom Paths (Optional)
+# ─────────────────────────────────────────────────────────────
+# Uncomment to override default locations
+
+# Database location (default: ~/.local/share/ferret/ledger.db)
+# database_path = "~/.local/share/ferret/ledger.db"
+
+# Log file location (optional)
+# log_file = "~/.local/share/ferret/ferret.log"

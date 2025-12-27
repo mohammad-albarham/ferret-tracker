@@ -1,0 +1,74 @@
+[package]
+name = "ferret"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ferret Contributors"]
+description = "A curious file tracker - monitors and logs new files in a searchable TUI"
+license = "CC0-1.0"
+readme = "README.md"
+repository = "https://github.com/yourusername/ferret"
+keywords = ["filesystem", "monitor", "tui", "file-tracking", "download-manager"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+# TUI framework
+ratatui = "0.29"
+crossterm = "0.28"
+
+# File system notifications (cross-platform: inotify on Linux, FSEvents on macOS, etc.)
+notify = "7.0"
+notify-debouncer-mini = "0.5"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Dates and times
+chrono = { version = "0.4", features = ["serde"] }
+
+# XDG directory paths
+dirs = "5.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Glob pattern matching for ignore patterns
+glob = "0.3"
+globset = "0.4"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Human-readable sizes
+humansize = "2.1"
+
+# For opening files with system default application
+open = "5.3"
+
+# Colored output for non-TUI modes
+colored = "2.1"
+
+# Unicode width for proper text truncation
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+[[bin]]
+name = "ferret"
+path = "src/main.rs"
