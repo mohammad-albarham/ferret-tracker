@@ -1,3 +1,5 @@
+[![Built With Ratatui](https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff)](https://ratatui.rs/)
+
 # Ferret Tracker
 
 <img src="assets/ferret-logo.png" alt="Ferret Logo" width="200" />
